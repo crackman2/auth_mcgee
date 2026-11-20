@@ -1,513 +1,936 @@
 #!/bin/sh
-DEBUG=
+#DEBUG=
 
 DEFAULT_PW_LENGTH=32
-AUTH_DIR="auth-mcgee"
+AUTH_DIR="d.auth-mcgee"
 AUTH_FILE="${AUTH_DIR}/auth"
 DATA_DIR="${AUTH_DIR}/data"
 
 SPECIAL_FILE="${AUTH_DIR}/special"
-SPECIAL_LIST_DEFAULT='!@#$%^&*()_+=-[]'
+SPECIAL_LIST_DEFAULT='!@#$%^&*()_+=[]-'
 SPECIAL_LIST_PREFIX="A-Za-z0-9"
 
 g_inputPw=
 g_finalPw=
 
+g_data0=
+g_data1=
+g_data2=
+g_data3=
+g_data4=
+
 # dependncies (yucky, impure, embarrassing):
-# gpg
-# base64
-# argon2
+#   gpg
+#   base64
+#   argon2
 
 
-# shcat stolen from cate
+# -> cat substitute stolen from cate
 _cat() {
     while IFS= read -r p || [ "$p" ]; do
 	printf '%s\n' "$p"
     done
 }
 
-_en(){ printf '%s\n' "$1"; }
 
-_e(){ printf '%s' "$1"; }
+# Shortcuts for printf
+#_en(){ printf '%s\n' "$1"; }
+#_e(){ printf '%s' "$1"; }
 
-_dbg_pause(){ [ -n "$DEBUG" ] && { _e '-debug pause-'; read -r _;}; }
-
-_dbg_deleteAuthFile(){
-    [ "$DEBUG" ] && [ -f "$AUTH_FILE" ] && {
-	_e "type 'YES' to delete auth file: "
-	read -r delAuth
-	[ "$delAuth" = "YES" ] && { rm "$AUTH_FILE"; }
-    }
+#ARG: 1=string to be checked
+#RET: is number -> empty
+#     is not    -> 1
+_isNumber() {
+    case ${1-} in
+        ''|*[!0-9+-]*) return 1 ;;
+        +*) case ${1#+} in ''|*[!0-9]*) return 1 ;; esac ;;
+        -*) case ${1#-} in ''|*[!0-9]*) return 1 ;; esac ;;
+        *)  case ${1-} in *[!0-9]*) return 1 ;; esac ;;
+    esac
+    return 0
 }
 
+
+#ARG: 1=string to be hashed
+#RET: hashed string
 _hash(){ printf '%s' "$(printf '%s' "$1" | argon2 "$USER" -id -r -t 6 -m 17)"; }
 
-# _isStringValid; ARG $1=string to check; RET success->input string; failure->empty
+
+#ARG: 1=string to check
+#RET: success->input string, failure->empty
 _isStringValid(){ printf '%s' "$(printf '%s\n' "$1" | LC_ALL=C grep -E '^[A-Za-z0-9!@#$%^&*()_+=-]+$')"; }
 
+
+#ARG: 1=first string, 2=second string
+#RET: success->empty, failure->"1"
+# -> TODO redundant print?
 _isPwSame(){ printf '%s' "$([ -n "$1" ] && [ "$1" = "$2" ] || { printf '%s' 1; })"; }
 
+
+#ARG: 1=text file
+#RET: first line of file, no linefeed
 _readFirstLine(){ printf '%s' "$( _cat < "$1" | head -n 1)"; }
 
+
+# Exit if special file is missing/cannot be created
 _checkSpecialFile(){
     if [ ! -e "$SPECIAL_FILE" ]; then
-	_e "$SPECIAL_LIST_DEFAULT" >> "$SPECIAL_FILE"
+	printf '%s' "$SPECIAL_LIST_DEFAULT" >> "$SPECIAL_FILE"
 	if [ ! -e "$SPECIAL_FILE" ]; then
-	    _en "[Error] special file can't be created. rip"; exit 1
+	    printf '%s\n' "[Error] special file can't be created. rip"; exit 1
 	else
-	    _en "[Info] special file created"
+	    printf '%s\n' "[Info] special file created"
 	fi
     fi
 }
 
-#_randomPw ARG $1=length
+
+#ARG: 1=length
+#RET: random string of length $1, using only chars listed in special file
 _randomPw(){
     _checkSpecialFile    
-    __specialList="$(_readFirstLine "$SPECIAL_FILE")"
-    #printf '%s' "$__specialList"
-    printf '%s' "$( _cat < /dev/urandom | tr -dc "$__specialList" | fold -w "$1" | head -n 1 )"
+    __rpSpecialList="$(_readFirstLine "$SPECIAL_FILE")"
+    #printf '%s' "$__rpSpecialList"
+    printf '%s' "$( _cat < /dev/urandom | tr -dc "$__rpSpecialList" | fold -w "$1" | head -n 1 )"
 }
 
 
+# -> Print error message
+_printInvalid(){ printf '%s\n' "[Error] invalid. allowed chars: A-Za-z0-9!@#$%^&*()_+=-" ;}
 
-_printInvalid(){ _en "[Error] invalid. allowed chars: A-Za-z0-9!@#$%^&*()_+=-" ;}
 
-# _spacedString ARG $1=string to convert; eg. "test" -> "t e s t"
+#ARG: 1=string
+#RET: string with space between each char
+# -> "test" -> "t e s t"
 _spacedString(){
-    #    echo "spacing string: [${1}]"
-    __str="$1"
-    __res=
-    while [ -n "$__str" ]; do
-	__res="$__res ${__str%"${__str#?}"}"
-	__str="${__str#?}"
-	# 	echo "__str: " "${__str}"
+    __ssInputString="$1"
+    __ssResult=
+    while [ -n "$__ssInputString" ]; do
+	__ssResult="$__ssResult ${__ssInputString%"${__ssInputString#?}"}"
+	__ssInputString="${__ssInputString#?}"
     done
-    __res="${__res#?}"
-    printf '%s' "$__res"
+    __ssResult="${__ssResult#?}"
+    printf '%s' "$__ssResult"
 }
+
 
 #ARG: 1=string 2=spacer_length 3=char[ ]
-#RET: returns string of spaces which is needed to reach
+#RET: returns string of spaces (or specified char) which is needed to reach
 #     desired width when combined with input string
 _spacer(){
-    __in="$1"
-    __char="${3:- }"
-    __i="$(expr $2 - ${#__in})"
-    while [ "$__i" -gt 0 ];do
-	__out="${__out}$__char"
-	__i="$((__i-1))"
+    if [ "$#" -lt 2 ] || [ -z "$1" ] || [ -z "$2" ]; then
+	printf '%s' "[Error] _spacer: missing args"; exit 1
+    fi
+
+    if [ "${#3}" -gt 1 ]; then
+	printf '%s' '[Error] _spacer: $3 can'\''t be longer than 1'; exit 1
+    fi
+        
+    __spInputString="$1"
+    __spChar="${3:- }"
+    __spResult=
+    __spIndex="$(expr "$2" - "${#__spInputString}")"
+
+    while [ "$__spIndex" -gt 0 ]; do
+	__spResult="$__spResult$__spChar"
+	__spIndex="$((__spIndex - 1))"
     done
-    printf '%s' "$__out"
+
+    printf '%s' "$__spResult"
 }
 
 
-#ARG $1=space separated string; $2=index (starting at 1)
-#RET value at the indexed position
+#ARG: 1=space separated string, 2=index (starting at 1)
+#RET: value at the indexed position
+# -> 1="beep boop bap", 2="2" -> RET:"boop"
 _retrieveSubstringUsingIndex(){
-    __tmp1="$1"
-    __tmp2="$2"
+    __rsInputString="$1"
+    __rsIndex="$2"
     set f-
-    __index=1
-    for __subString in $__tmp1; do
-	[ "$__index" = "$__tmp2" ] && {
+    __rsI=1
+    for __subString in $__rsInputString; do
+	if [ "$__rsI" = "$__rsIndex" ]; then
 	    printf '%s' "$__subString"
 	    return
-	}
-	__index="$((__index+1))"
+	fi
+	__rsI="$((__rsI + 1))"
     done
-    printf '%s' "_rSUI_ERROR"
+    printf '%s' "[Error] _retrieveSubstringUsingIndex: index out of range"
     set f+
 }
 
 
-
+#ARG: 1=string
+#RET: 2=base64 encoded string
 _base64enc(){
     printf '%s' "$(printf '%s' "$1" | base64 -w 0 -)"
 }
 
+
+#ARG: 1=base64 encoded string
+#RET: 2=decoded string
 _base64dec(){
     printf '%s' "$(printf '%s' "$1" | base64 -d -)"
 }
 
 
-# ARGS: text pw
-_encode() {
+#ARG: 1=string, 2=password
+#RET: string encrypted using gpg with password
+_encrypt() {
     printf '%s' "$1" | gpg --batch --pinentry-mode loopback --passphrase "$2" --armor --symmetric --output - 2> /dev/null
 }
 
-# ARGS: text pw
-_decode() {
+
+#ARG: 1=string, 2=password
+#RET: string decrypted using gpg with password
+_decrypt() {
     printf '%s' "$1" | gpg --batch --pinentry-mode loopback --passphrase "$2" --decrypt --output - 2> /dev/null
 }
 
-# ARGS: label urlService username email finalPW
+
+#ARG: 1=label of entry, 2=encrypted name or url of service
+#     3=encrypted username,  4=encrypted email, 5=encrypted password
+#RET : path to file
 _storeEntry(){
-
-    if ! [ -d "$DATA_DIR" ]; then
-	mkdir -p "$DATA_DIR"
+    if [ -z "$1" ]; then
+	#printf '%s\n' "[Error] _storeEntry: label cannot be empty"
+	return 1
     fi
-    
-    __f="$(_base64enc "$1")"
-    __fPath="${DATA_DIR}/'$__f'"
-    __us="$(_encode "$2" "$g_inputPw")"
-    __un="$(_encode "$3" "$g_inputPw")"
-    __em="$(_encode "$4" "$g_inputPw")"
-    __pw="$(_encode "$5" "$g_inputPw")"
-    
-    : > "$__fPath"
+        
+    # Ensure data directory is present
+    if ! [ -d "$DATA_DIR" ]; then
+	if ! mkdir -p "$DATA_DIR"; then
+	    #printf '%s\n' "[Error] _storeEntry: could not create data directory"
+	    return 2
+	fi
+    fi
 
+    # Set filepath
+    # -> filename is base64 encoded for no particular reason. i just like base64.
+    #    however i could claim it's to allow spaces in labels and the files
+    #    don't immediately show what their label is. secure against people
+    #    who don't know how to decode base64
+    __seFile="$(_base64enc "$1")"
+    __seFilePath="${DATA_DIR}/'$__seFile'"
+
+    # Check if filename is available
+    if [ -e "$__seFilePath" ]; then
+	printf '%s' "[Error] _storeEntry: filename unavailable"; return 3
+    fi
+            
+    # Encrypt and assign fields
+    __seUrlService="$(_encrypt "$2" "$g_inputPw")"
+    __seUsername="$(_encrypt "$3" "$g_inputPw")"
+    __seEmail="$(_encrypt "$4" "$g_inputPw")"
+    __sePassword="$(_encrypt "$5" "$g_inputPw")"
+
+    # Create empty file
+    : > "$__seFilePath"
+
+    # Write data to file
     {
-	printf '%s\n' "$(_base64enc "${__us}")";\
-	    printf '%s\n' "$(_base64enc "${__un}")";\
-	    printf '%s\n' "$(_base64enc "${__em}")";\
-	    printf '%s\n' "$(_base64enc "${__pw}")" 
-    } >>   "$__fPath"
+	printf '%s\n' "$(_base64enc "${__seUrlService}")";\
+	    printf '%s\n' "$(_base64enc "${__seUsername}")";\
+	    printf '%s\n' "$(_base64enc "${__seEmail}")";\
+	    printf '%s\n' "$(_base64enc "${__sePassword}")" 
+    } >>   "$__seFilePath"
 
-    printf '%s'  "$__fPath"
+    # Return filepath
+    printf '%s'  "$__seFilePath"
+    return 0
 }
 
 
-# ARGS: <non-base64 filename>
+#ARG: 1=non-base64 filename
+# -> decodes, decrypts and prints entry contents
 _listEntries_loadEntry(){
-    __arg="$1"
-    set -- "s" "u" "e" "p"
-    __content="$(_cat < "$__arg")"
-    __leLineNumber=0
-    for __line in $__content; do
-	__b64dec="$(_base64dec "$__line")"
-	__gpgdec="$(_decode "$__b64dec" "$g_inputPw")"
-	echo "$1: $__gpgdec"
+    __lelFilename="$1"
+
+    # Check if globals (g_data*) should be printed instead
+    if [ -n "$2" ]; then
+	__lelPrintGlobals=1
+    else
+	__lelPrintGlobals=
+    fi
+    
+    # Strip path and single quotes
+    __lelFilenameStripped="$(basename "$__lelFilename")"
+    __lelFilenameStripped="${__lelFilenameStripped#?}"
+    __lelFilenameStripped="${__lelFilenameStripped%?}"
+    
+    # Save label field for editing entry
+    g_data0="$(_base64dec "$__lelFilenameStripped")"
+    
+    # Labels for lines
+    set --\
+	"1. service : " \
+	"2. username: " \
+	"3. email   : " \
+	"4. password: "
+
+    # Read contents of entry
+    __lelContents="$(_cat < "$__lelFilename")"
+    __lelLineNumber=0
+
+    # Print entry label
+    printf '%s\n' "0. label   : $g_data0"
+    
+    # Decode and decrypt each line, print with corresponding label
+    for __lelLine in $__lelContents; do
+	__lelFieldIndex="$((__lelLineNumber + 1))"
+
+	# Globals and their meaning
+	#   label    : g_data0
+	#   service  : g_data1
+	#   username : g_data2
+	#   email    : g_data3
+	#   password : g_data4
+	
+	# Check if globals should be printed instead of laboriously decoding and decrypting
+	if [ -z "$__lelPrintGlobals" ]; then
+	    __lelLineDecoded="$(_base64dec "$__lelLine")"
+	    __lelLineDecrypted="$(_decrypt "$__lelLineDecoded" "$g_inputPw")"
+
+	    # Save field into corresponding global
+	    # Used for editing entries and for faster printing
+	    eval "g_data$__lelFieldIndex='$__lelLineDecrypted'"
+
+	    # Print decoded/decrypted value 
+	    printf '%s\n' "$1$__lelLineDecrypted"
+	else
+	    # Print value stored in global
+	    eval "printf '%s\n' \"\$1\$g_data$__lelFieldIndex\""
+	fi
+	
 	shift
-	__leLineNumber="$((__leLineNumber+1))"
+	__lelLineNumber="$((__lelLineNumber + 1))"
     done
 
-    if [ "$__leLineNumber" -le 2 ]; then
-	_en "[Error] save file seems to be missing lines"
+    # Check if number of lines is correct
+    if [ "$__lelLineNumber" -lt 4 ]; then
+	printf '%s\n' "[Error] _listEntries_loadEntry: save file is missing lines"
     fi
 }
 
 
+#ARG: 1=base64 filename
+# -> lists contents of entry and shows menu
 _listEntries_Option(){
+    __leoFilename="$1"
+
+    __leoFirstLoop=
+    
+    # Menu loop
     while :; do
+	# Print contents and menu, read input
 	clear
-	_en "entry: $(_base64dec "$1")"
-	_en "loading: ${DATA_DIR}/'$1'"
-	_listEntries_loadEntry "${DATA_DIR}/'$1'"
-	_en ""
-	_en "9. delete"
-	_en "q. quit"
-	_e "option: "; read -r  opt
-	case "$opt" in
+	printf '%s\n' "main -> list entries -> entry: $(_base64dec "$__leoFilename")"
+	printf '%s\n' "loading: ${DATA_DIR}/'$__leoFilename'"
+	printf '%s\n' " -- fields -- "
+	_listEntries_loadEntry "${DATA_DIR}/'$__leoFilename'" "$__leoFirstLoop"
+
+	# Prevent reading entry file and decoding/decryption for next loop
+	# It's much faster. Also not required when data hasn't changed
+	if [ -z "$__leoFirstLoop" ]; then
+	    __leoFirstLoop=1
+	fi
+
+	# Print options
+	printf '%s\n' ""
+	printf '%s\n' "1. edit"
+	printf '%s\n' "9. delete"
+	printf '%s\n' "q. quit"
+	printf '%s' "option: "; read -r __leoOption
+
+	# Process input
+	case "$__leoOption" in
+	    1)
+		printf '%s\n' "----- EDITING -----"
+		printf '%s\n' ""
+		while :; do
+		    # Prompt to select field using index
+		    # or save or quit
+     		    
+		    printf '%s' "select field using index ('q' to quit, 'save' to save): "
+		    read -r __leoFieldChoice
+
+		    # Check if input is a valid index
+		    if _isNumber "$__leoFieldChoice" && [ "$__leoFieldChoice" -ge 0 ] && [ "$__leoFieldChoice" -le 4 ]; then
+
+			# Print prompt to enter new value, displaying the current value as default
+			eval "printf '%s' \"enter new value [\$g_data$__leoFieldChoice] (q to quit input): \""
+			__leoFieldInput=
+			read -r __leoFieldInput
+
+			# Check if input is quitting or empty
+			if [ "$__leoFieldInput" != "q" ] && [ -n "$__leoFieldInput" ]; then
+			    # Set var to nothing so file so file gets read again and globals filles with original values again
+			    # Happens when calling _listEntries_loadEntry
+			    __leoFirstLoop=
+			    eval "g_data$__leoFieldChoice='$__leoFieldInput'"
+
+			    # Print current summary of fields after editing
+			    __leoFieldLabels="label service username email password"
+			    __leoFieldIndex=0
+
+			    for __leoFieldLabel in $__leoFieldLabels; do
+				printf '%s\n' "${__leoFieldIndex}. $__leoFieldLabel$(_spacer "$__leoFieldLabel" 8): $(eval "printf '%s' \"\$g_data$__leoFieldIndex\" ")"
+				__leoFieldIndex="$((__leoFieldIndex + 1))"
+			    done
+			else
+			    printf '%s\n' "field unchanged"
+			fi
+			
+		    # Check if saving
+		    elif [ "$__leoFieldChoice" = "save" ]; then
+			printf '%s' "are you sure you want to save the changes? [N/y]: "
+			read -r __leoSaveChoice
+
+			case "$__leoSaveChoice" in
+			    y|Y|yes|YES|Yes)
+				# Globals and their meaning
+				#   label    : g_data0
+				#   service  : g_data1
+				#   username : g_data2
+				#   email    : g_data3
+				#   password : g_data4
+
+				# Delete old file
+				# Create new file filled with values from globals
+				# TODO some kind of error checking for _storeEntry
+				if rm -f "${DATA_DIR}/'$__leoFilename'"; then
+				    __leoFilename="$(_base64enc "$g_data0")"
+				    __leoStoreResult="$(_storeEntry "$g_data0" "$g_data1" "$g_data2" "$g_data3" "$g_data4")"
+				    
+				    case "$?" in
+					1) printf '%s\n' "saving failed. label cannot be empty";;
+					2) printf '%s\n' "saving failed. directory could not be created. this shouldn't be a possible return code.";;
+					3) printf '%s\n' "saving failed. filename/label unavailable";;
+					*) printf '%s' "changes saved in: $__leoStoreResult" ;;
+				    esac
+				    
+				    sleep 1.5
+				    break
+				else
+				    printf '%s\n' "old entry couldn't be deleted. saving failed"
+				fi
+			    ;;
+			    *)
+				printf '%s\n' "not saving"
+			    ;;
+			esac
+						
+		    # Check if quitting
+		    elif [ "$__leoFieldChoice" = q ]; then
+			break
+		    else
+			printf '%s\n' "invalid. not a number or or out of range"
+		    fi
+		    
+	       	done
+	    ;;
 	    9)
-		_e "type 'DELETE' to delete entry. anything else to abort: "; read -r __sure
-		if [ "$__sure" = "DELETE" ]; then
-		    rm "$1"
-		    "entry deleted"
+		printf '%s' "type 'DELETE' to delete entry. anything else to abort: "; read -r __leoConfirmation
+		if [ "$__leoConfirmation" = "DELETE" ]; then
+		    if rm -f "${DATA_DIR}/'$__leoFilename'"; then
+			printf '%s\n' "entry deleted"
+		    else
+			printf '%s\n' "deletion failed"
+		    fi
+		    
 		    sleep 1.5
 		    break
 		fi
-		_en "aborted deletion"
+		printf '%s\n' "aborted deletion"
 		;;
 	    q)break;;
-	    *)_en "invalid";;
+	    *)printf '%s\n' "invalid";;
 	esac
-    
     done
+
+    # Clear globals
+    g_data0=
+    g_data1=
+    g_data2=
+    g_data3=
+    g_data4=
 }
 
 
-
-#_listEntries_
+# -> lists entries found in data directory, shows menu.
+#    entries are split into two columns
 _listEntries(){
-    __fileList=
-    __fileListDec=
-    __longestLen=0
-    for __entry in ${DATA_DIR}/*; do
-	__innie="${__entry#${DATA_DIR}/}"
-	__outie="${__innie#?}"
-	__need="${__outie%?}"
-	__dec="$(_base64dec "$__need")"
-	__fileList="$__fileList $__need"
-	__currentLen="$(_base64dec "$__need")"
-	__currentLen="${#__currentLen}"
-	if [ "$__currentLen" -gt "$__longestLen" ]; then
-	    __longestLen="$__currentLen"
-	fi
-    done
+    # Check if data directory exists
+    if ! [ -d "$DATA_DIR" ]; then
+	printf '%s\n' "[Error] _listEntries: data directory missing"; return
+    fi
 
+    
+    # Menu loop
     while :; do
 	clear
-	_en "---- listing ----"
+	__leFileList=
+	__leLongestLabel=0
+
+	# Fill file list, determine 
+	for __leEntry in ${DATA_DIR}/*; do
+	    # Strip path, leaving filename
+	    # TODO: use basename?
+	    __leFilename="${__leEntry#"${DATA_DIR}/"}"
+
+	    # Strip leading and trailing single quote
+	    __leFilename="${__leFilename#?}"
+	    __leFilename="${__leFilename%?}"
+
+	    # Add filename to list for menu
+	    __leFileList="$__leFileList $__leFilename"
+
+	    # Determine longest label, needed to determine column width of listing
+	    __leLabelLength="$(_base64dec "$__leFilename")"
+	    __leLabelLength="${#__leLabelLength}"
+	    
+	    if [ "$__leLabelLength" -gt "$__leLongestLabel" ]; then
+		__leLongestLabel="$__leLabelLength"
+	    fi
+	done
 	
-	__i=0
-	__flipFlop=0
-	for __file in $__fileList; do
-	    __i="$((__i+1))"
-	    if [ "$__flipFlop" -eq 0 ]; then
-		__hold="$(_base64dec "$__file")"
-		__flipFlop=1
+	clear
+	printf '%s\n' "main -> list entries"
+
+	# Print two entries on one line, even spacing
+	__leI=0
+	__leFlipFlop=0
+	for __leFile in $__leFileList; do
+	    # Increase index, used to select entry
+	    __leI="$((__leI + 1))"
+
+	    
+	    if [ "$__leFlipFlop" -eq 0 ]; then
+		# Decode to get label, hold until next loop
+		__leHold="$(_base64dec "$__leFile")"
+		__leFlipFlop=1
 	    else
-		_en "$((__i-1)): $__hold$(_spacer "$__hold" $((__longestLen+3)))$__i: $(_base64dec "$__file")"
-		__flipFlop=0
+		# Print held and current label
+		# Prepend index
+		# Add spacing
+		printf '%s\n' "$((__leI - 1)): $__leHold$(_spacer "$__leHold" $((__leLongestLabel + 3)))$__leI: $(_base64dec "$__leFile")"
+		__leFlipFlop=0
 	    fi
 	done
 
-	if [ "$__flipFlop" -eq 1 ]; then
-	    _en "$__i: $__hold"
+	# Print leftover label if present
+	# Prepend index
+	if [ "$__leFlipFlop" -eq 1 ]; then
+	    printf '%s\n' "$__leI: $__leHold"
 	fi
-	
-	_en
-	_en "select entry"
-	_en "q. quit"
-      	_e "option: "; read -r __opt
 
-	if [ "$__opt" -eq "$__opt" ] 2> /dev/null; then
-	    __i=1
-	    for __file in $__fileList; do
-		if [ "$__i" -eq "$__opt" ]; then
-		    _listEntries_Option "$__file"
+	# Print options for menu
+	# Read input
+	printf '%s\n' ""
+	printf '%s\n' "select entry"
+	printf '%s\n' "q. quit"
+      	printf '%s' "option: "; read -r __leOption
+
+	if _isNumber "$__leOption"; then
+	    __leI=1
+	    __leFound=
+
+	    # Iterate over file list
+	    for __leFile in $__leFileList; do
+		# Stop at the selected index
+		if [ "$__leI" -eq "$__leOption" ]; then
+		    __leFound=1
+		    _listEntries_Option "$__leFile"
 		    break
 		fi
-		__i="$((__i+1))"
+
+		__leI="$((__leI + 1))"
 	    done
-	elif [ "$__opt" = "q" ]; then
+
+	    # Print error when index can't be found
+	    if [ -z "$__leFound" ]; then
+		printf '%s\n' "index out of range"
+		sleep 0.5
+	    fi
+	elif [ "$__leOption" = "q" ]; then
 	    return
 	else
-	    _en "invalid"
+	    printf '%s\n' "invalid"
+	    sleep 0.5
 	fi
     done
 }
 
 
-
-
+# -> set entry password using manual input
 _newEntry_desiredPw(){
     clear
-    _en "main -> new entry -> desired password"
+    printf '%s\n' "main -> new entry -> desired password"
     while :; do
-	_e "desired pw:"
+	printf '%s' "desired pw: "
 	read -r __desPw1; [ "$__desPw1" = "q" ] && return
+	
 	[ -z "$(_isStringValid "$__desPw1")" ] && { _printInvalid; continue; }
-	_e "again     : "
+	
+	printf '%s' "again     : "
 	read -r __desPw2; [ "$__desPw2" = "q" ] && return
 	[ -z "$(_isStringValid "$__desPw2")" ] && { _printInvalid; continue; }
-	_en "password set"
+	
+	printf '%s\n' "password set"
+	
 	g_finalPw="$__desPw1"
 	break
     done
 }
 
-_newEntry_genPw_options(){
-    _checkSpecialFile
-    
-    __specialList="$(_readFirstLine "$SPECIAL_FILE")"
-    __specialListSpaced="$(_spacedString "$__specialList")"
-    __specialListDefaultSpaced="$(_spacedString "$SPECIAL_LIST_DEFAULT")"
 
+# -> set allowed special characters for password generation
+#    using interactive menu
+#    save changes to file containing allowed special characters
+_newEntry_generatedPw_options(){
+    # Check if special file is present
+    # Creates it, if not
+    _checkSpecialFile
+
+    __ngoSpecialList="$(_readFirstLine "$SPECIAL_FILE")"
+    __ngoSpecialListSpaced="$(_spacedString "$__ngoSpecialList")"
+    __ngoSpecialListDefaultSpaced="$(_spacedString "$SPECIAL_LIST_DEFAULT")"
+
+    # Menu Loop
     while :; do
-        _en 'main -> new entry -> generated password -> special characters'
-	__oldIFS="$IFS"
+        printf '%s\n' 'main -> new entry -> generated password -> special characters'
+
+	# Somehow required, though I never touch the IFS here. odd
+	__ngoOldIFS="$IFS"
+
+	# Disable pathname expansion for * and ? etc.
 	set -f
-	__specialListActiveIndex=
-	__i=1
-	for _ in $__specialListDefaultSpaced; do
-	    __charFound=1
-	    __s=
-	    [ "$__i" -le 9 ] && { __s=" "; }
-	    for __ in $__specialListSpaced; do
-		[ "$_" = "$__" ] && {
-		    _en "$__s$__i. [X] $_"
-		    __specialListActiveIndex="$__specialListActiveIndex y"
-		    __charFound=
+	
+	__ngoSpecialListActiveIndex=
+	__ngoI=1
+
+	# Iterate over default special chars
+	# Check if char is listed in special file
+	# Print with index and checkbox
+	for __ngoSpecialCharDefault in $__ngoSpecialListDefaultSpaced; do
+	    __ngoCharFound=
+	    __ngoSpace=
+
+	    # Prepend space if index is single digit
+	    if [ "$__ngoI" -le 9 ]; then
+		__ngoSpace=" "
+	    fi
+
+	    # Iterate over chars in special file
+	    # Compare with default special char
+	    # Print with checked box if found
+	    for __ngoSpecialChar in $__ngoSpecialListSpaced; do
+		if [ "$__ngoSpecialCharDefault" = "$__ngoSpecialChar" ]; then
+		    printf '%s\n' "$__ngoSpace$__ngoI. [X] $__ngoSpecialCharDefault"
+		    __ngoSpecialListActiveIndex="$__ngoSpecialListActiveIndex y"
+		    __ngoCharFound=1
 		    break
-		}
+		fi
 	    done
-	    [ -n "$__charFound" ] && {
-		_en "$__s$__i. [ ] $_"
-		__specialListActiveIndex="$__specialListActiveIndex n"
-	    }
-	    __i="$((__i+1))"
+
+	    # Print with unchecked box if not
+	    if [ -z "$__ngoCharFound" ]; then
+		printf '%s\n' "$__ngoSpace$__ngoI. [ ] $__ngoSpecialCharDefault"
+		__ngoSpecialListActiveIndex="$__ngoSpecialListActiveIndex n"
+	    fi
+	    
+	    __ngoI="$((__ngoI + 1))"
 	done
 	set +f
 
-	_en ""
-	_en "input index to toggle"
-	_en "'s' to apply changes"
-	_en "'q' to exit menu"
-	_e  "option:"
-	read -r __opt
-	case "$__opt" in
-	    q) IFS="$__oldIFS"; return;;
+	# Print options
+	# Read input
+	printf '%s\n' ""
+	printf '%s\n' "input index to toggle"
+	printf '%s\n' "'s' to apply changes"
+	printf '%s\n' "'q' to exit menu"
+	printf '%s'  "option:"; read -r __ngoOption
+
+	# Handle save and quit
+	case "$__ngoOption" in
+	    q) IFS="$__ngoOldIFS"; return;;
 	    s)
 		set -f
 		_cat <<EOF > "$SPECIAL_FILE"
-$SPECIAL_LIST_PREFIX$__specialList
+$SPECIAL_LIST_PREFIX$__ngoSpecialList
 EOF
-		_en "settings saved. press ENTER to contiue..."
+		printf '%s\n' "settings saved. press ENTER to contiue..."
 		read -r _
 		set +f
-		IFS="$__oldIFS"
+		IFS="$__ngoOldIFS"
 		return;;
 	esac
 
-	
-	[ "$__opt" -eq "$__opt" ] && [ -n "$__opt" ] && {
-	    __i=1
-	    __newSpecialList=
-	    _en "__specialListSpaced:[$__specialListDefaultSpaced]"
-	    _en "__specialListActiveIndex:[$__specialListActiveIndex]"
+	# Handle index
+	if _isNumber "$__ngoOption"; then
+	    __ngoI=1
+	    __ngoNewSpecialList=
+
 	    set -f
-	    for _ in $__specialListDefaultSpaced; do
-		__currentSubStr="$(_retrieveSubstringUsingIndex "$__specialListActiveIndex" $__i)"
-		if [ "$__currentSubStr" = "y" ] && [ "$__i" -ne "$__opt" ]; then
-		    __newSpecialList="$__newSpecialList$_"
-		    #elif [ "$__currentSubStr" = "n" ] && [ "$i" -ne "$__opt" ]; then
+	    
+	    # Switch state of selected special char
+	    # Iterate over default special chars
+	    for __ngoSpecialCharDefault in $__ngoSpecialListDefaultSpaced; do
+		# Get state of selected char
+		__ngoCharState="$(_retrieveSubstringUsingIndex "$__ngoSpecialListActiveIndex" $__ngoI)"
+
+		# Add chars to new special list based on state and selected index
+		if [ "$__ngoCharState" = "y" ] && [ "$__ngoI" -ne "$__ngoOption" ]; then
+		    __ngoNewSpecialList="$__ngoNewSpecialList$__ngoSpecialCharDefault"
+		    #elif [ "$__ngoCharState" = "n" ] && [ "$i" -ne "$__ngoOption" ]; then
 		    #nothing
-		    #elif [ "$__currentSubStr" = "y" ] && [ "$i" -eq "$__opt" ]; then
+		    #elif [ "$__ngoCharState" = "y" ] && [ "$i" -eq "$__ngoOption" ]; then
 		    #nothing
-		elif [ "$__currentSubStr" = "n" ] && [ "$__i" -eq "$__opt" ]; then
-		    __newSpecialList="$__newSpecialList$_"
+		elif [ "$__ngoCharState" = "n" ] && [ "$__ngoI" -eq "$__ngoOption" ]; then
+		    __ngoNewSpecialList="$__ngoNewSpecialList$__ngoSpecialCharDefault"
 		fi		
-		__i="$((__i+1))"
+		__ngoI="$((__ngoI + 1))"
 	    done
-	    __specialListActiveIndex=
-	    __specialList="$__newSpecialList"
-	    __specialListSpaced="$(_spacedString "$__specialList")"
+
+	    # Overwrite old list with new one
+	    # Clear active index for next loop
+	    # TODO
+	    #  -> can just write directly into __ngoSpecialList, without first doing so in __ngoNewSpecialList
+	    #  -> 
+	    __ngoSpecialListActiveIndex=
+	    __ngoSpecialList="$__ngoNewSpecialList"
+	    __ngoSpecialListSpaced="$(_spacedString "$__ngoSpecialList")"
 	    set +f
-	}
-	IFS="$__oldIFS"
+	fi
+	IFS="$__ngoOldIFS"
     done
 }
 
+
+# -> menu for password generation
+#    prompt for length
+#    option to enter submenu to change special characters
 _newEntry_generatedPw(){
-    _en 'main -> new entry -> generated password'
+    printf '%s\n' 'main -> new entry -> generated password'
+
+    # Menu Loop
     while :; do
-	_e "gen pw length [${DEFAULT_PW_LENGTH}]: "; read -r __genLen; [ "$__genLen" = q ] && return
-	if [ "${__genLen:-${DEFAULT_PW_LENGTH}}" -eq "${__genLen:-${DEFAULT_PW_LENGTH}}" ] && [ -n "${__genLen:-${DEFAULT_PW_LENGTH}}" ]; then
-	    __genPw=$(_randomPw "${__genLen:-${DEFAULT_PW_LENGTH}}")
+	printf '%s' "gen pw length [${DEFAULT_PW_LENGTH}]: "
+	read -r __negGenPwLength; [ "$__negGenPwLength" = q ] && return
+	
+	if _isNumber "${__negGenPwLength:-${DEFAULT_PW_LENGTH}}" && \
+		[ "${__negGenPwLength:-${DEFAULT_PW_LENGTH}}" -gt 0 ]; then
+	    __negGenPw=$(_randomPw "${__negGenPwLength:-${DEFAULT_PW_LENGTH}}")
+	  
+	    
 	    while :; do
-		_en '---------------------------------------'
-		_en 'main -> new entry -> generated password'
-		_en "PW: ${__genPw}"
-		_en "1. regenerate (default)" 
-		_en "2. accept"
-		_en "3. special character options"
-		_en "q. quit"
-		_e "option: "; read -r __genPwChoice
-		case "${__genPwChoice:-1}" in
-		    1)__genPw=$(_randomPw "${__genLen:-${DEFAULT_PW_LENGTH}}");;
+		# Print options
+		# Read input
+		#printf '%s\n' '---------------------------------------'
+		#printf '%s\n' 'main -> new entry -> generated password'
+		#printf '%s\n' "PW: ${__negGenPw}"
+		#printf '%s\n' "1. regenerate (default)" 
+		#printf '%s\n' "2. accept"
+		#printf '%s\n' "3. special character options"
+		#printf '%s\n' "4. change password legnth"
+		#printf '%s\n' "q. quit"
+		#printf '%s' "option: "; read -r __negGenPwChoice
+
+		printf '\033[2K\r---------------------------------------\n'
+		printf '\033[2K\rmain -> new entry -> generated password\n'
+		printf '\033[2K\rPW: %s\n' "${__negGenPw}"
+		printf '\033[2K\r1. regenerate (default)\n'
+		printf '\033[2K\r2. accept\n'
+		printf '\033[2K\r3. special character options\n'
+		printf '\033[2K\r4. change password length\n'
+		printf '\033[2K\rq. quit\n'
+		printf '\033[2K\roption: '; read -r __negGenPwChoice
+		
+		case "${__negGenPwChoice:-1}" in
+		    1)
+			__negGenPw=$(_randomPw "${__negGenPwLength:-${DEFAULT_PW_LENGTH}}")
+			printf '\033[9A\r'
+			;;
 		    2)break;;
-		    3)_newEntry_genPw_options;;
-		    q)_main;;
-		    *)_en "invalid";
+		    3)_newEntry_generatedPw_options;;
+		    4)
+			while :; do
+			    printf '%s\n' "current length: ${__negGenPwLength:-${DEFAULT_PW_LENGTH}}"
+			    printf '%s' "enter new length [${DEFAULT_PW_LENGTH}]: "
+			    read -r __negGenPwLength; [ "$__negGenPwLength" = q ] && return
+			    
+			    if _isNumber "${__negGenPwLength:-${DEFAULT_PW_LENGTH}}" && \
+				    [ "${__negGenPwLength:-${DEFAULT_PW_LENGTH}}" -gt 0 ]; then
+				__negGenPw=$(_randomPw "${__negGenPwLength:-${DEFAULT_PW_LENGTH}}")
+				break
+			    else
+				printf '%s\n' "[Error] invalid length"
+			    fi
+			done
+			;;
+		    q)return;;
+		    *)printf '%s\n' "invalid";
 		esac
 	    done
 	    
-	    g_finalPw="$__genPw"
+	    g_finalPw="$__negGenPw"
 	    break
 	else
-	    _en "[Error] invalid length"
+	    printf '%s\n' "[Error] invalid length"
 	fi
-	_en "ending"
+	printf '%s\n' "ending"
     done    
 }
 
-#_newEntry_
-_newEntry(){
-    _en 'main -> new entry'
-    _en "type 'q' at any point to quit"
-    
-    _e "label: "; read -r __label; [ "$__label" = q ] && return
-    _e "url or service: "; read -r __urlService; [ "$__urlService" = q ] && return
-    _e "username: "; read -r __username; [ "$__username" = q ] && return
-    _e "e-mail: "; read -r __email; [ "$__email" = q ] && return
-    _e "generate password? [Y/n]"; read -r __wannaGen
-    case "$__wannaGen" in
-	q)return;;
-	n|N|no|NO|No)
-	    _newEntry_desiredPw;;
-	*) _newEntry_generatedPw;;
-    esac
-    _e  '-> summary: '; _en "${__label}"
-    _en "url/srv   : ${__urlService}"
-    _en "username  : ${__username}"
-    _en "e-mail    : ${__email}"
-    _en "password  : ${g_finalPw}"
 
-    _e "press ENTER to continue... (or q to abort)"; read -r __continueAbort
-    case "$__continueAbort" in
+# -> menu for creating new entries
+_newEntry(){
+    clear
+    printf '%s\n' 'main -> new entry'
+    printf '%s\n' "type 'q' at any point to quit"
+
+    # Prompt for each field
+    # Read input
+    printf '%s' "label: "; read -r __neLabel; [ "$__neLabel" = q ] && return
+    printf '%s' "url or service: "; read -r __neUrlService; [ "$__neUrlService" = q ] && return
+    printf '%s' "username: "; read -r __neUsername; [ "$__neUsername" = q ] && return
+    printf '%s' "e-mail: "; read -r __neEmail; [ "$__neEmail" = q ] && return
+
+    g_finalPw=
+    
+    while [ -z "$g_finalPw" ]; do
+	printf '%s' "generate password? [Y/n]"; read -r __neGenChoice
+
+	# Handle setting password
+	case "$__neGenChoice" in
+	    q)return;;
+	    n|N|no|NO|No)
+		_newEntry_desiredPw;;
+	    *) _newEntry_generatedPw;;
+	esac
+    done
+
+    # Show summary before storing entry
+    printf '%s'   '-> summary: '; printf '%s\n' "${__neLabel}"
+    printf '%s\n' "url/srv   : ${__neUrlService}"
+    printf '%s\n' "username  : ${__neUsername}"
+    printf '%s\n' "e-mail    : ${__neEmail}"
+    printf '%s\n' "password  : ${g_finalPw}"
+
+    # Allow for option to abort
+    printf '%s' "press ENTER to continue... (or q to abort)"; read -r __neProceedChoice
+    case "$__neProceedChoice" in
 	q|Q)return;;
     esac
+
     clear
 
-    _storeEntry "$__label" "$__urlService" "$__username" "$__email" "$g_finalPw"
-    _en "entry saved"
+    # Save
+    _storeEntry "$__neLabel" "$__neUrlService" "$__neUsername" "$__neEmail" "$g_finalPw"
+    printf '%s\n' "entry saved"
+    sleep 1.5
 }
 
-_authCheck(){
-    _en "---- auth-mcgee ----"
 
+# -> prompt for password if auth file is present
+#    prompt for new password if auth file is missing
+_authCheck(){
+    printf '%s\n' "---- auth-mcgee ----"
+
+    # Check auth directory
     if [ ! -d "$AUTH_DIR"  ]; then
 	if ! mkdir "$AUTH_DIR"; then
-	    _en "[Error] auth directory could not be created"; exit 1
+	    printf '%s\n' "[Error] auth directory could not be created"; exit 1
 	fi
     fi
 
+    # Check auth file
     if [ ! -f "$AUTH_FILE" ]; then
-	_en '-> setup'
+	printf '%s\n' '-> setup'
+
+	# Menu Loop
+	# prompts twice for new master password
+	# TODO hide input
 	while :; do
 	    clear
-	    __masterPw1= ; __masterPw2=
-	    _e "set master password: "; read -r __masterPw1
-	    [ -z "$(_isStringValid "$__masterPw1")" ] && { _printInvalid; continue; }
-	    _e "again to confirm   : "; read -r __masterPw2
-	    [ -z "$(_isStringValid "$__masterPw2")" ] && { _printInvalid; continue; }
-
 	    
-	    if [ -n "$__masterPw1" ] && [ "$__masterPw1" = "$__masterPw2" ]; then
-		
-		_hash "$__masterPw1" >> "$AUTH_FILE"
+	     # Hide input
+	    stty_orig=$(stty -g)
+	    stty -echo
+	    
+	    __acMasterPw1= ; __acMasterPw2=
+	    printf '%s' "set master password: "; read -r __acMasterPw1
+	    [ -z "$(_isStringValid "$__acMasterPw1")" ] && { _printInvalid; continue; }
+	    printf '%s' "again to confirm   : "; read -r __acMasterPw2
+	    [ -z "$(_isStringValid "$__acMasterPw2")" ] && { _printInvalid; continue; }
 
-		[ ! -f "$AUTH_FILE" ] && { _en "[Error] auth file couldn't be written"; exit 1; }
-		_en "[Info] master password set"
+	    # Unhide input
+	    stty $stty_orig
+	    
+	    # Check if passwords match
+	    if [ -n "$__acMasterPw1" ] && [ "$__acMasterPw1" = "$__acMasterPw2" ]; then
+
+		# Save hash to auth file
+		_hash "$__acMasterPw1" >> "$AUTH_FILE"
+
+		# Check if auth file was actually created
+		[ ! -f "$AUTH_FILE" ] && { printf '%s\n' "[Error] auth file couldn't be written"; exit 1; }
+		printf '%s\n' "[Info] master password set"
 		break
 	    else
-		_en "[Error] passwords don't match. try again"
+		printf '%s\n' "[Error] passwords don't match. try again"
 	    fi
 	done
     else
-	_en
+	printf '%s\n' ""
+	# Login loop
 	while :; do
+	    # Hide input
 	    stty_orig=$(stty -g)
 	    stty -echo
-            _e "login: "; read -r g_inputPw
+
+	    # Read
+            printf '%s' "login (q to quit): "; read -r g_inputPw
+
+	    # Unhide input
 	    stty $stty_orig
 	    clear
-	    _e "checking..."
+
+	    if [ "$g_inputPw" = "q" ]; then
+		printf '%s\n' "bye!"
+		exit
+	    fi
+	    	    
+	    # Compare hashes
+	    printf '%s' "checking..."
             if [ "$(_hash "${g_inputPw}")" = "$(_readFirstLine "$AUTH_FILE")" ]; then
-		_en "well done"; break
+		# Exit loop
+		printf '%s\n' "well done"; break
 	    else
-		_en "wrong"
+		printf '%s\n' "wrong"
 	    fi
 	done
     fi
 }
+
+
 
 _main(){
     _authCheck
     while :; do
-	_en "---- auth-mcgee ----"
-	_en "main"
-	_en "1. list entries"
-	_en "2. new entry"
-	_en "q. quit"
-	_e "option: "; read -r __choice
+	clear
+	printf '%s\n' "---- auth-mcgee ----"
+	printf '%s\n' "main"
+	printf '%s\n' "1. list entries"
+	printf '%s\n' "2. new entry"
+	printf '%s\n' "q. quit"
+	printf '%s' "option: "; read -r __choice
 
 	case "$__choice" in
 	    1)_listEntries;;
 	    2)_newEntry;;
-	    q)_en "bye!"; exit 0;;
-	    *)_en "invalid";;
+	    q)printf '%s\n' "bye!"; exit 0;;
+	    *)printf '%s\n' "invalid";sleep 1;;
 	esac
     done
 }

@@ -1,5 +1,5 @@
 #!/bin/sh
-#DEBUG=
+DEBUG=
 
 DEFAULT_PW_LENGTH=32
 AUTH_DIR="d.auth-mcgee"
@@ -13,11 +13,14 @@ SPECIAL_LIST_PREFIX="A-Za-z0-9"
 g_inputPw=
 g_finalPw=
 
+# Globals used for editing and lisitng entries
+# in order: label, service, username, email, password
 g_data0=
 g_data1=
 g_data2=
 g_data3=
 g_data4=
+
 
 # dependncies (yucky, impure, embarrassing):
 #   gpg
@@ -32,10 +35,13 @@ _cat() {
     done
 }
 
+# -> clear if not debugging
+_clear(){
+    if [ -z "$DEBUG" ]; then
+	clear
+    fi
+}
 
-# Shortcuts for printf
-#_en(){ printf '%s\n' "$1"; }
-#_e(){ printf '%s' "$1"; }
 
 #ARG: 1=string to be checked
 #RET: is number -> empty
@@ -63,13 +69,18 @@ _isStringValid(){ printf '%s' "$(printf '%s\n' "$1" | LC_ALL=C grep -E '^[A-Za-z
 
 #ARG: 1=first string, 2=second string
 #RET: success->empty, failure->"1"
-# -> TODO redundant print?
-_isPwSame(){ printf '%s' "$([ -n "$1" ] && [ "$1" = "$2" ] || { printf '%s' 1; })"; }
+_isPwSame(){ if [ -n "$1" ] && [ "$1" != "$2" ]; then printf '1'; fi; }
 
 
 #ARG: 1=text file
 #RET: first line of file, no linefeed
-_readFirstLine(){ printf '%s' "$( _cat < "$1" | head -n 1)"; }
+#_readFirstLine(){ printf '%s' "$( _cat < "$1" | head -n 1)"; }
+_readFirstLine(){
+    while IFS= read -r __rfLine || [ "$__rfLine" ]; do
+	printf '%s' "$__rfLine"
+	break
+    done < "$1"
+}
 
 
 # Exit if special file is missing/cannot be created
@@ -90,7 +101,6 @@ _checkSpecialFile(){
 _randomPw(){
     _checkSpecialFile    
     __rpSpecialList="$(_readFirstLine "$SPECIAL_FILE")"
-    #printf '%s' "$__rpSpecialList"
     printf '%s' "$( _cat < /dev/urandom | tr -dc "$__rpSpecialList" | fold -w "$1" | head -n 1 )"
 }
 
@@ -123,9 +133,9 @@ _spacer(){
     fi
 
     if [ "${#3}" -gt 1 ]; then
-	printf '%s' '[Error] _spacer: $3 can'\''t be longer than 1'; exit 1
+	printf '%s' "[Error] _spacer: \$3 can't be longer than 1"; exit 1
     fi
-        
+    
     __spInputString="$1"
     __spChar="${3:- }"
     __spResult=
@@ -193,14 +203,14 @@ _decrypt() {
 #RET : path to file
 _storeEntry(){
     if [ -z "$1" ]; then
-	#printf '%s\n' "[Error] _storeEntry: label cannot be empty"
+	printf '%s\n' "[Error] _storeEntry: label cannot be empty"
 	return 1
     fi
-        
+    
     # Ensure data directory is present
     if ! [ -d "$DATA_DIR" ]; then
 	if ! mkdir -p "$DATA_DIR"; then
-	    #printf '%s\n' "[Error] _storeEntry: could not create data directory"
+	    printf '%s\n' "[Error] _storeEntry: could not create data directory"
 	    return 2
 	fi
     fi
@@ -217,7 +227,7 @@ _storeEntry(){
     if [ -e "$__seFilePath" ]; then
 	printf '%s' "[Error] _storeEntry: filename unavailable"; return 3
     fi
-            
+    
     # Encrypt and assign fields
     __seUrlService="$(_encrypt "$2" "$g_inputPw")"
     __seUsername="$(_encrypt "$3" "$g_inputPw")"
@@ -260,7 +270,7 @@ _listEntries_loadEntry(){
     
     # Save label field for editing entry
     g_data0="$(_base64dec "$__lelFilenameStripped")"
-    
+
     # Labels for lines
     set --\
 	"1. service : " \
@@ -313,9 +323,154 @@ _listEntries_loadEntry(){
 }
 
 
+#ARG: 1=non base64 filename 2=variable name without the $ to store result in
+# -> replaces entry file with new one
+#    uses fields stored in g_data[0-4] as new content
+#    (encoded and encrypted)
+# TODO deletes file before checking if saving is even possible. so might just delete entry entirely :/
+_listEntries_options_edit_save(){
+    # Ensure new filename isn't already present in data directory
+    if ! [ -e "${DATA_DIR}/$(_base64enc "$g_data0")" ]; then
+	printf '%s' "are you sure you want to save the changes? [N/y]: "
+	read -r __leoesSaveChoice
+
+	case "$__leoesSaveChoice" in
+	    y|Y|yes|YES|Yes)
+		# Globals and their meaning
+		#   label    : g_data0
+		#   service  : g_data1
+		#   username : g_data2
+		#   email    : g_data3
+		#   password : g_data4
+
+		# Delete old file
+		# Create new file filled with values from globals
+		if rm -f "${DATA_DIR}/'$1'"; then
+		    __leoesStoreResult="$(_storeEntry "$g_data0" "$g_data1" "$g_data2" "$g_data3" "$g_data4")"
+		    case "$?" in
+			1) printf '%s\n' "[Error] saving failed. label cannot be empty";;
+			2) printf '%s\n' "[Error] saving failed. directory could not be created. \
+this shouldn't be a possible return code.";;
+			3) printf '%s\n' "[Error] saving failed. filename/label unavailable";;
+			*)
+			    __leoesFilenameStripped="$(basename "$__leoesStoreResult")"
+			    __leoesFilenameStripped="${__leoesFilenameStripped#?}"
+			    __leoesFilenameStripped="${__leoesFilenameStripped%?}"
+			    eval "$2=$__leoesFilenameStripped"
+			    printf '%s'   "[Info] changes saved in $__leoFilename"
+			    ;;
+		    esac
+
+		    # Pass exit code onto callee
+		    return "$?"
+		else
+		    printf '%s\n' "[Error] old entry couldn't be deleted. saving failed"
+		fi
+		;;
+	    *)
+		printf '%s\n' "[Info] not saving"
+		;;
+	esac
+    else
+	printf '%s\n' "[Error] filename/label unavailable"
+    fi
+}
+
+
+#ARG: 1=index of field 2=name of 
+# -> change value of a field
+# -> store in corresponding g_data variable
+_listEntries_options_edit_changeField(){
+    # Print prompt to enter new value, displaying the current value as default
+    eval "printf '%s' \"enter new value [\$g_data$1] (q to quit input): \""
+    __leoecFieldInput=
+    read -r __leoecFieldInput
+
+    # Check if input is quitting or empty
+    if [ "$__leoecFieldInput" != "q" ] && [ -n "$__leoecFieldInput" ]; then
+
+	eval "g_data$1='$__leoecFieldInput'"
+
+	# Print current summary of fields after editing
+	__leoecFieldLabels="label service username email password"
+	__leoecFieldIndex=0
+	for __leoecFieldLabel in $__leoecFieldLabels; do
+	    printf '%s\n' "${__leoecFieldIndex}. \
+$__leoecFieldLabel$(_spacer "$__leoecFieldLabel" 8): \
+$(eval "printf '%s' \"\$g_data$__leoecFieldIndex\" ")"
+	    __leoecFieldIndex="$((__leoecFieldIndex + 1))"
+	done
+	return 0
+    else
+	printf '%s\n' "[Info] field unchanged"
+	return 1
+    fi
+}
+
+
+#ARG: 1=base64 filename
+# -> deletes entry after asking for confirmation
+_listEntries_options_delete(){
+    printf '%s' "type 'DELETE' to delete entry. anything else to abort: "; read -r __leoConfirmation
+    if [ "$__leoConfirmation" = "DELETE" ]; then
+	if rm -f "${DATA_DIR}/'$1'"; then
+	    printf '%s\n' "[Info] entry deleted"
+	else 
+	    printf '%s\n' "[Error] deletion failed"
+	fi
+	
+	sleep 1.5
+	return 0
+    fi
+    printf '%s\n' "[Info] aborted deletion"
+    return 1
+}
+
+
+#ARG: 1=name of variable to base64 filename
+_listEntries_options_edit(){
+    printf '%s\n' "----- EDITING -----"
+    printf '%s\n' ""
+    while :; do
+	# Prompt to select field using index
+	# or save or quit
+     	printf '%s' "select field using index ('q' to quit, 'save' to save): "
+	read -r __leoeFieldChoice
+
+	# Call _changeField if input is valid index
+	if _isNumber "$__leoeFieldChoice" && \
+		[ "${#__leoeFieldChoice}" -eq 1 ] && \
+		[ "$__leoeFieldChoice" -ge 0 ] && \
+		[ "$__leoeFieldChoice" -le 4 ]; then
+	    _listEntries_options_edit_changeField "$__leoeFieldChoice"
+
+	    # Call _save 
+	elif [ "$__leoeFieldChoice" = "save" ]; then
+	    # Save changes using g_data[0-4]
+	    # base64 name of the (potentially renamed) file will be
+	    # stored in variable named in $1
+	    # unchanged when an error is encountered
+	    if _listEntries_options_edit_save "$(eval "printf '%s' \"\$$1\"")" "$1"; then
+		break
+	    fi
+	    sleep 1.5
+	    
+	    # Break loop when exiting    
+	elif [ "$__leoeFieldChoice" = q ]; then
+	    break
+
+	    # Print error for everything else
+	else
+	    printf '%s\n' "[Error] invalid. not a number or or out of range"
+	fi
+    done
+}
+
+
 #ARG: 1=base64 filename
 # -> lists contents of entry and shows menu
-_listEntries_Option(){
+# -> options for deletion and editing
+_listEntries_options(){
     __leoFilename="$1"
 
     __leoFirstLoop=
@@ -323,7 +478,7 @@ _listEntries_Option(){
     # Menu loop
     while :; do
 	# Print contents and menu, read input
-	clear
+	_clear
 	printf '%s\n' "main -> list entries -> entry: $(_base64dec "$__leoFilename")"
 	printf '%s\n' "loading: ${DATA_DIR}/'$__leoFilename'"
 	printf '%s\n' " -- fields -- "
@@ -344,107 +499,26 @@ _listEntries_Option(){
 
 	# Process input
 	case "$__leoOption" in
+	    # Editing entries
+	    # This section exploded into 100% unrefined spaghetti
+	    # TODO break it up into smaller, more comprehensible functions 
 	    1)
-		printf '%s\n' "----- EDITING -----"
-		printf '%s\n' ""
-		while :; do
-		    # Prompt to select field using index
-		    # or save or quit
-     		    
-		    printf '%s' "select field using index ('q' to quit, 'save' to save): "
-		    read -r __leoFieldChoice
-
-		    # Check if input is a valid index
-		    if _isNumber "$__leoFieldChoice" && [ "$__leoFieldChoice" -ge 0 ] && [ "$__leoFieldChoice" -le 4 ]; then
-
-			# Print prompt to enter new value, displaying the current value as default
-			eval "printf '%s' \"enter new value [\$g_data$__leoFieldChoice] (q to quit input): \""
-			__leoFieldInput=
-			read -r __leoFieldInput
-
-			# Check if input is quitting or empty
-			if [ "$__leoFieldInput" != "q" ] && [ -n "$__leoFieldInput" ]; then
-			    # Set var to nothing so file so file gets read again and globals filles with original values again
-			    # Happens when calling _listEntries_loadEntry
-			    __leoFirstLoop=
-			    eval "g_data$__leoFieldChoice='$__leoFieldInput'"
-
-			    # Print current summary of fields after editing
-			    __leoFieldLabels="label service username email password"
-			    __leoFieldIndex=0
-
-			    for __leoFieldLabel in $__leoFieldLabels; do
-				printf '%s\n' "${__leoFieldIndex}. $__leoFieldLabel$(_spacer "$__leoFieldLabel" 8): $(eval "printf '%s' \"\$g_data$__leoFieldIndex\" ")"
-				__leoFieldIndex="$((__leoFieldIndex + 1))"
-			    done
-			else
-			    printf '%s\n' "field unchanged"
-			fi
-			
-		    # Check if saving
-		    elif [ "$__leoFieldChoice" = "save" ]; then
-			printf '%s' "are you sure you want to save the changes? [N/y]: "
-			read -r __leoSaveChoice
-
-			case "$__leoSaveChoice" in
-			    y|Y|yes|YES|Yes)
-				# Globals and their meaning
-				#   label    : g_data0
-				#   service  : g_data1
-				#   username : g_data2
-				#   email    : g_data3
-				#   password : g_data4
-
-				# Delete old file
-				# Create new file filled with values from globals
-				# TODO some kind of error checking for _storeEntry
-				if rm -f "${DATA_DIR}/'$__leoFilename'"; then
-				    __leoFilename="$(_base64enc "$g_data0")"
-				    __leoStoreResult="$(_storeEntry "$g_data0" "$g_data1" "$g_data2" "$g_data3" "$g_data4")"
-				    
-				    case "$?" in
-					1) printf '%s\n' "saving failed. label cannot be empty";;
-					2) printf '%s\n' "saving failed. directory could not be created. this shouldn't be a possible return code.";;
-					3) printf '%s\n' "saving failed. filename/label unavailable";;
-					*) printf '%s' "changes saved in: $__leoStoreResult" ;;
-				    esac
-				    
-				    sleep 1.5
-				    break
-				else
-				    printf '%s\n' "old entry couldn't be deleted. saving failed"
-				fi
-			    ;;
-			    *)
-				printf '%s\n' "not saving"
-			    ;;
-			esac
-						
-		    # Check if quitting
-		    elif [ "$__leoFieldChoice" = q ]; then
-			break
-		    else
-			printf '%s\n' "invalid. not a number or or out of range"
-		    fi
-		    
-	       	done
-	    ;;
-	    9)
-		printf '%s' "type 'DELETE' to delete entry. anything else to abort: "; read -r __leoConfirmation
-		if [ "$__leoConfirmation" = "DELETE" ]; then
-		    if rm -f "${DATA_DIR}/'$__leoFilename'"; then
-			printf '%s\n' "entry deleted"
-		    else
-			printf '%s\n' "deletion failed"
-		    fi
-		    
-		    sleep 1.5
+		if _listEntries_options_edit "__leoFilename"; then
+		    # Set var  to nothing so file gets read again
+		    # and globals filles with original values again
+		    # -> Happens when calling _listEntries_loadEntry
+		    __leoFirstLoop=
+		fi
+		;;
+	    9)	
+		if _listEntries_options_delete "$__leoFilename"; then
+		    # Stop viewing entry if it was delete
+		    # Return to listing of all entries
 		    break
 		fi
-		printf '%s\n' "aborted deletion"
 		;;
 	    q)break;;
-	    *)printf '%s\n' "invalid";;
+	    *)printf '%s\n' "[Error] invalid";;
 	esac
     done
 
@@ -468,7 +542,7 @@ _listEntries(){
     
     # Menu loop
     while :; do
-	clear
+	_clear
 	__leFileList=
 	__leLongestLabel=0
 
@@ -494,7 +568,7 @@ _listEntries(){
 	    fi
 	done
 	
-	clear
+	_clear
 	printf '%s\n' "main -> list entries"
 
 	# Print two entries on one line, even spacing
@@ -513,7 +587,9 @@ _listEntries(){
 		# Print held and current label
 		# Prepend index
 		# Add spacing
-		printf '%s\n' "$((__leI - 1)): $__leHold$(_spacer "$__leHold" $((__leLongestLabel + 3)))$__leI: $(_base64dec "$__leFile")"
+		printf '%s\n' "$((__leI - 1)): $__leHold\
+$(_spacer "$__leHold" $((__leLongestLabel + 3)))\
+$__leI: $(_base64dec "$__leFile")"
 		__leFlipFlop=0
 	    fi
 	done
@@ -540,7 +616,7 @@ _listEntries(){
 		# Stop at the selected index
 		if [ "$__leI" -eq "$__leOption" ]; then
 		    __leFound=1
-		    _listEntries_Option "$__leFile"
+		    _listEntries_options "$__leFile"
 		    break
 		fi
 
@@ -549,13 +625,13 @@ _listEntries(){
 
 	    # Print error when index can't be found
 	    if [ -z "$__leFound" ]; then
-		printf '%s\n' "index out of range"
+		printf '%s\n' "[Error] index out of range"
 		sleep 0.5
 	    fi
 	elif [ "$__leOption" = "q" ]; then
 	    return
 	else
-	    printf '%s\n' "invalid"
+	    printf '%s\n' "[Error] invalid"
 	    sleep 0.5
 	fi
     done
@@ -564,7 +640,7 @@ _listEntries(){
 
 # -> set entry password using manual input
 _newEntry_desiredPw(){
-    clear
+    _clear
     printf '%s\n' "main -> new entry -> desired password"
     while :; do
 	printf '%s' "desired pw: "
@@ -576,7 +652,7 @@ _newEntry_desiredPw(){
 	read -r __desPw2; [ "$__desPw2" = "q" ] && return
 	[ -z "$(_isStringValid "$__desPw2")" ] && { _printInvalid; continue; }
 	
-	printf '%s\n' "password set"
+	printf '%s\n' "[Info] password set"
 	
 	g_finalPw="$__desPw1"
 	break
@@ -677,7 +753,8 @@ EOF
 	    # Iterate over default special chars
 	    for __ngoSpecialCharDefault in $__ngoSpecialListDefaultSpaced; do
 		# Get state of selected char
-		__ngoCharState="$(_retrieveSubstringUsingIndex "$__ngoSpecialListActiveIndex" $__ngoI)"
+		__ngoCharState="$(_retrieveSubstringUsingIndex \
+"$__ngoSpecialListActiveIndex" $__ngoI)"
 
 		# Add chars to new special list based on state and selected index
 		if [ "$__ngoCharState" = "y" ] && [ "$__ngoI" -ne "$__ngoOption" ]; then
@@ -721,21 +798,10 @@ _newEntry_generatedPw(){
 	if _isNumber "${__negGenPwLength:-${DEFAULT_PW_LENGTH}}" && \
 		[ "${__negGenPwLength:-${DEFAULT_PW_LENGTH}}" -gt 0 ]; then
 	    __negGenPw=$(_randomPw "${__negGenPwLength:-${DEFAULT_PW_LENGTH}}")
-	  
 	    
 	    while :; do
 		# Print options
 		# Read input
-		#printf '%s\n' '---------------------------------------'
-		#printf '%s\n' 'main -> new entry -> generated password'
-		#printf '%s\n' "PW: ${__negGenPw}"
-		#printf '%s\n' "1. regenerate (default)" 
-		#printf '%s\n' "2. accept"
-		#printf '%s\n' "3. special character options"
-		#printf '%s\n' "4. change password legnth"
-		#printf '%s\n' "q. quit"
-		#printf '%s' "option: "; read -r __negGenPwChoice
-
 		printf '\033[2K\r---------------------------------------\n'
 		printf '\033[2K\rmain -> new entry -> generated password\n'
 		printf '\033[2K\rPW: %s\n' "${__negGenPw}"
@@ -769,7 +835,7 @@ _newEntry_generatedPw(){
 			done
 			;;
 		    q)return;;
-		    *)printf '%s\n' "invalid";
+		    *)printf '%s\n' "[Error] invalid";
 		esac
 	    done
 	    
@@ -778,14 +844,14 @@ _newEntry_generatedPw(){
 	else
 	    printf '%s\n' "[Error] invalid length"
 	fi
-	printf '%s\n' "ending"
+	printf '%s\n' "[Info] ending"
     done    
 }
 
 
 # -> menu for creating new entries
 _newEntry(){
-    clear
+    _clear
     printf '%s\n' 'main -> new entry'
     printf '%s\n' "type 'q' at any point to quit"
 
@@ -805,8 +871,11 @@ _newEntry(){
 	case "$__neGenChoice" in
 	    q)return;;
 	    n|N|no|NO|No)
-		_newEntry_desiredPw;;
-	    *) _newEntry_generatedPw;;
+		_newEntry_desiredPw
+		;;
+	    *)
+		_newEntry_generatedPw
+		;;
 	esac
     done
 
@@ -823,11 +892,11 @@ _newEntry(){
 	q|Q)return;;
     esac
 
-    clear
+    _clear
 
     # Save
     _storeEntry "$__neLabel" "$__neUrlService" "$__neUsername" "$__neEmail" "$g_finalPw"
-    printf '%s\n' "entry saved"
+    printf '%s\n' "[Info] entry saved"
     sleep 1.5
 }
 
@@ -852,9 +921,9 @@ _authCheck(){
 	# prompts twice for new master password
 	# TODO hide input
 	while :; do
-	    clear
+	    _clear
 	    
-	     # Hide input
+	    # Hide input
 	    stty_orig=$(stty -g)
 	    stty -echo
 	    
@@ -894,13 +963,13 @@ _authCheck(){
 
 	    # Unhide input
 	    stty $stty_orig
-	    clear
+	    _clear
 
 	    if [ "$g_inputPw" = "q" ]; then
 		printf '%s\n' "bye!"
 		exit
 	    fi
-	    	    
+	    
 	    # Compare hashes
 	    printf '%s' "checking..."
             if [ "$(_hash "${g_inputPw}")" = "$(_readFirstLine "$AUTH_FILE")" ]; then
@@ -914,11 +983,41 @@ _authCheck(){
 }
 
 
+_changeMasterPassword(){
+    while :; do
+	printf '%s\n' "main -> change master password"
+	printf '%s\n' "('q' to quit at any time)"
+	printf '%s'   "enter current password: "
+	read -r __cmpCurrent; if [ "$__cmpCurrent" = "q" ]; then return; fi
+
+
+	if _isPwSame "$__cmpCurrent" "$g_inputPw"; then
+	    while :; do
+		printf '%s' "enter new password: "
+		read -r __cmpMasterPw1; if [ "$__cmpMasterPw1" = "q" ]; then return; fi
+
+		printf '%s'  "again            : "
+		read -r __cmpMasterPw2; if [ "$__cmpMasterPw2" = "q" ]; then return; fi
+		
+		if _isPwSame "$__cmpMasterPw1" "$__cmpMasterPw2"; then
+		    printf 'UNFINISHED'
+		    # TODO FINISH THIS PART
+		    # Re-encrypt everything using new password. h			
+		else
+		    printf '%s\n' "[Error] mismatching passwords"
+		fi
+	    done
+	else
+	    printf '%s\n' "[Error] incorrect password. uh oh"
+	fi
+    done
+}
+
 
 _main(){
     _authCheck
     while :; do
-	clear
+	_clear
 	printf '%s\n' "---- auth-mcgee ----"
 	printf '%s\n' "main"
 	printf '%s\n' "1. list entries"
@@ -930,7 +1029,7 @@ _main(){
 	    1)_listEntries;;
 	    2)_newEntry;;
 	    q)printf '%s\n' "bye!"; exit 0;;
-	    *)printf '%s\n' "invalid";sleep 1;;
+	    *)printf '%s\n' "[Error] invalid";sleep 1;;
 	esac
     done
 }
